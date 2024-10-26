@@ -1,0 +1,330 @@
+---
+title: "Analysis of Illegal Immigration and Rape in US States"
+author: "Franco Krepel"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/Users/francokrepel/Documents/College/ECON_DATA/P1")
+library(tidyverse)
+library(readxl)
+library(dplyr) 
+library(stargazer)
+library(scales)
+```
+## 1. Introduction
+
+### Research Question
+*What is the effect of illegal immigration on crime rates in different states?*
+
+This question is relevant because immigration, particularly illegal immigration, is often linked to discussions about public safety and crime. As we are coming up to the US elections, the topic of illegal immigration has been exasperated and is a main concern that both the Democratic and Republican party aim to address. Understanding whether or not a significant relationship exists between these variables is crucial for policy-making and public discourse. Furthermore, considering variables like police presence and population will help identify whether the link between immigration and crime is straightforward or if other factors are influencing crime rates.
+
+## 2. Data
+
+### Data Description
+
+The dataset includes state-level data from 2000-2022, covering:
+
+- **Total Crime**: The total number of crimes committed per year in each state.
+- **Illegal Immigration**: The estimated number of illegal immigrants residing in each state for each year.
+- **Officers per 1,000 People**: This measures the police presence, normalized by population.
+- **Population**: The total population in each state per year.
+
+### Data Sources
+
+1. **Population Data**  
+   - **Source**: [Federal Reserve Economic Data (FRED)](https://fredaccount.stlouisfed.org/datalists/330174/download)  
+   - **Description**: This dataset provides historical population data for different states, collected and published by FRED. The population estimates are presented annually and are crucial for normalizing other variables like crime rates and police presence. This data allows us to control for population size, which naturally affects the total crime rates in each state.
+
+2. **Illegal Immigration Data**  
+   - **Source**: [Department of Homeland Security (DHS) - Unauthorized Immigrant Population Estimates](https://ohss.dhs.gov/sites/default/files/2024-06/2024_0418_ohss_estimates-of-the-unauthorized-immigrant-population-residing-in-the-united-states-january-2018%25E2%2580%2593january-2022.pdf)  
+   - **Description**: These estimates are provided by the DHS, covering the unauthorized immigrant population in the United States from 2018 to 2022. The data offers a detailed breakdown by state and year. These estimates are vital for our analysis as they quantify the variable "Illegal Immigration" and provide the basis for examining its relationship with crime rates.
+
+3. **Crime Data**  
+   - **Source**: [FBI Crime Data Explorer](https://cde.ucr.cjis.gov/LATEST/webapp/#/pages/explorer/crime/query)  
+   - **Description**: Crime data is gathered from the FBI’s Uniform Crime Reporting (UCR) system. This dataset includes state-level crime statistics across various offenses, aggregated annually. The data is made available through the Crime Data Explorer (CDE) and covers both violent and property crimes. The UCR is one of the most comprehensive crime datasets in the U.S., making it appropriate for analyzing crime trends over time.
+
+### Frequency
+
+- The data is aggregated annually, which makes it suitable for identifying trends and relationships over time. However, it limits the ability to explore short-term fluctuations.
+
+### Potential Limitations
+
+- **Time Frequency**: The data is annual, and using monthly data might reveal more granular trends, especially for crime rates.
+- **Accuracy of Immigration Estimates**: The estimates of illegal immigration are inherently uncertain due to the hidden nature of the population.
+- **Unobserved Factors**: Socio-economic factors such as poverty rates, unemployment, and education levels could also influence crime but are not accounted for in the current dataset.
+
+
+Cleaning up Crime and Immigration datasets (Using rape for now)
+```{r, results = "hide", message = FALSE, warning = FALSE}
+# List of state CSV files for crime data
+state_files <- c("Rape_Data/CA_rape.csv", "Rape_Data/TX_rape.csv", "Rape_Data/FL_rape.csv", "Rape_Data/NJ_rape.csv", "Rape_Data/IL_rape.csv", "Rape_Data/NY_rape.csv", "Rape_Data/NC_rape.csv", "Rape_Data/GA_rape.csv", "Rape_Data/WA_rape.csv", "Rape_Data/AZ_rape.csv")
+
+# Function to process each crime and clearance file
+process_file <- function(file) {
+  # Read the CSV file
+  data <- read_csv(file)
+  
+  # Separate the first two rows for Crime and Clearance counts
+  crime_data <- data[1, ]  # First row is for Crime
+  clearance_data <- data[2, ]  # Second row is for Clearances
+  
+  # Extract the full state name from the series (assuming it comes first in the string)
+  extract_state <- function(series_str) {
+    str_extract(series_str, "^[A-Za-z\\s]+") %>% str_trim()  # Extract state name and trim white spaces
+  }
+  
+  # Convert the wide format to long format for crime data
+  crime_long <- crime_data %>%
+    pivot_longer(-series, names_to = "Date", values_to = "Value") %>%
+    mutate(State = extract_state(series), Type = "Crime") %>%
+    select(-series)
+  
+  # Convert the wide format to long format for clearance data
+  clearance_long <- clearance_data %>%
+    pivot_longer(-series, names_to = "Date", values_to = "Value") %>%
+    mutate(State = extract_state(series), Type = "Clearance") %>%
+    select(-series)
+  
+  # Combine the crime and clearance data
+  combined_long <- bind_rows(crime_long, clearance_long)
+  
+  return(combined_long)
+}
+
+# Apply the process_file function to each file and combine the results
+all_states_data <- map_dfr(state_files, process_file)
+
+# Filter to only include crime data (excluding clearance)
+crime_data <- all_states_data %>%
+  filter(Type == "Crime")
+
+# Extract Year from Date and sum the values by year and state
+crime_data <- crime_data %>%
+  mutate(Year = substr(Date, 4, 7)) %>%  # Extract the year from the "Date" column
+  mutate_at(c('Year'), as.numeric) %>%
+  group_by(State, Year) %>%
+  summarize(Rape = sum(Value, na.rm = TRUE))
+
+# Now for the illegal immigration dataset
+illegal_immigration <- read_csv("illegal_immigration.csv")
+# Reshape the illegal immigration data from wide to long format
+illegal_immigration <- illegal_immigration %>%
+  pivot_longer(cols = -State, names_to = "Year", values_to = "Illegal_Immigration") %>%
+  mutate_at(c('Year'), as.numeric)
+
+# Combine crime data and illegal immigration data
+combined_data <- crime_data %>%
+  inner_join(illegal_immigration, by = c("State", "Year"))
+
+### Now Add Police Data ###
+
+# List of police files for each state (same states as above)
+police_files <- c("Police_Data/CA_police.csv", "Police_Data/TX_police.csv", "Police_Data/FL_police.csv", "Police_Data/NJ_police.csv", "Police_Data/IL_police.csv", "Police_Data/NY_police.csv", "Police_Data/NC_police.csv", "Police_Data/GA_police.csv", "Police_Data/WA_police.csv", "Police_Data/AZ_police.csv")
+
+# Function to extract the full state name based on file names
+extract_full_state_name <- function(file) {
+  state_map <- c("CA" = "California", "TX" = "Texas", "FL" = "Florida", "NJ" = "New Jersey", 
+                 "IL" = "Illinois", "NY" = "New York", "NC" = "North Carolina", 
+                 "GA" = "Georgia", "WA" = "Washington", "AZ" = "Arizona")
+  
+  state_abbr <- str_extract(file, "(?<=/)[A-Z]{2}(?=_)")  # Extract the state abbreviation from the file name
+  full_state <- state_map[[state_abbr]]  # Map abbreviation to full state name
+  
+  return(full_state)
+}
+
+# Function to process police data for each state
+process_police_file <- function(file) {
+  data <- read_csv(file)
+  
+  # Reshape the police data from wide to long format
+  police_long <- data %>%
+    pivot_longer(-series, names_to = "Year", values_to = "Officers_per_1000") %>%
+    mutate(State = extract_full_state_name(file)) %>%
+    select(State, Year, Officers_per_1000) %>%
+    mutate_at(c('Year'), as.numeric)
+  
+  return(police_long)
+}
+
+# Apply the process_police_file function to each police file
+police_data <- map_dfr(police_files, process_police_file)
+
+# Merge the police data with the combined crime and immigration data
+final_combined_data <- combined_data %>%
+  inner_join(police_data, by = c("State", "Year"))
+
+## POPULATION DATA ##
+
+# Read in the state population data
+population_data <- read_csv("state_populations.csv")
+
+# Reshape population data from wide to long format
+population_long <- population_data %>%
+  pivot_longer(cols = -Year, names_to = "State", values_to = "Population") %>%
+  mutate_at(c('Year'), as.numeric)
+
+# Now merge the population data with the existing combined dataset
+final_combined_data_with_population <- final_combined_data %>%
+  inner_join(population_long, by = c("State", "Year"))
+
+# Save the final combined dataset to a CSV file
+write_csv(final_combined_data_with_population, "final_combined_crime_immigration_police_population_data.csv")
+```
+
+Loading the combined data
+```{r, message = FALSE, warning = FALSE}
+crime_immigration <- read_csv("final_combined_crime_immigration_police_population_data.csv")
+
+crime_immigration <- crime_immigration %>%
+  mutate(
+    Rape_Per_Capita = Rape / Population * 1000,
+    Illegal_Immigration_Per_capita = Illegal_Immigration / Population * 1000
+    )
+
+head(crime_immigration)
+```
+
+## 3. Description
+
+### Summary Statistics
+
+```{r, message = FALSE, warning = FALSE}
+summary(crime_immigration)
+```
+
+### Figures and Tables
+
+1.  **Illegal Immigration vs. Rape Rates by Year**
+```{r, message = FALSE, warning = FALSE}
+ggplot(crime_immigration, aes(x = Year, y = Rape_Per_Capita, color = State)) +
+  geom_line() +
+  geom_point(aes(y = Illegal_Immigration), shape = 3) +
+  labs(title = "Rape Rates and Illegal Immigration Over Time",
+       x = "Year",
+       y = "Rapes per 1,000 People and Illegal Immigration (scaled)",
+       color = "State")
+```
+
+- In the first graph that compares both rape rates and illegal immigration rates over time per state, (where the solid lines are rape rates and the crosses are immigration levels) It is hard to see much of a overall trend, but it seems that California and Texas have high per-capita rape rates
+
+- These trends suggest that in some states, higher rates of illegal immigration may coincide with increases in rape, but this is not uniform across the dataset, making it difficult to assert a causal relationship purely based on visual analysis.
+
+```{r, message = FALSE, warning = FALSE}
+library(scales)
+# 2 Y-axes: Total Rape and Illegal Immigration
+ggplot(crime_immigration, aes(x = Year)) +
+  geom_line(aes(y = Rape_Per_Capita / max(Rape_Per_Capita), color = "Rape"), size = 1) + # Normalize rape data
+  geom_line(aes(y = Illegal_Immigration_Per_capita / max(Illegal_Immigration_Per_capita), color = "Illegal Immigration"), size = 1) + # Normalize immigration data
+  facet_wrap(~ State, scales = "free_y") + # Facet by state for better comparison
+  scale_y_continuous(name = "Rape (Normalized)", 
+                     sec.axis = sec_axis(~ . * max(crime_immigration$Illegal_Immigration), 
+                                         name = "Illegal Immigration (Normalized)")) + # Add secondary axis for immigration
+  labs(title = "Rape and Illegal Immigration by State Over Time (Per Capita)",
+       x = "Year") +
+  scale_color_manual(values = c("Rape" = "blue", "Illegal Immigration" = "red")) + # Set colors for lines
+  theme_minimal() + 
+  theme(legend.position = "bottom")
+```
+
+- In this second graph that compares the time trends by state, states such as Texas and New Jersey show sharper increases in both rape and immigration levels (trends that slightly follow each other), where Florida the trends follow each other but downwards
+- Arizona shows a counterintuitive trend where immigration rates have decreased, while rape rates shows some fluctuations upwards.
+- The mixed results suggest that while some states show a stronger relationship between illegal immigration and rape, most do not
+- This graph helps demonstrate the variability of these relationships across different states. The state-specific nature of the data suggests the possibility of other local factors, such as policy differences, law enforcement strategies, or economic conditions, which need further exploration to determine a clearer relationship.
+
+2. **Police Presence vs. Rape Rates**
+```{r, message = FALSE, warning = FALSE}
+ggplot(crime_immigration, aes(x = Officers_per_1000, y = Rape_Per_Capita, color = State)) +
+  geom_point() +
+  labs(title = "Police Presence vs. Rape Rates",
+       x = "Officers per 1,000 People",
+       y = "Rapes per 1,000 People")
+```
+
+- The scatter plot comparing police presence (measured as officers per 1,000 people) vs. rape rates (rapes per 1,000 people) across states suggests a negative relationship. States with higher officer presence, like New Jersey and Illinois, tend to have lower crime rates.
+- Conversely, states like Arizona and Texas, which have fewer officers per capita, tend to exhibit higher crime rates. This implies a potential protective effect of police presence on crime rates.
+- However, the relationship between police presence and crime rates does not appear to be linear or consistent across all states, suggesting that other variables—such as state-specific crime policies or community trust in law enforcement—might be influencing these trends
+
+
+3. **Correlation Matrix**
+```{r,  message = FALSE, warning = FALSE}
+crime_immigration <- crime_immigration %>%
+  mutate(
+    Illegal_Immigration_Per_capita = Illegal_Immigration / Population * 1000
+  )
+cor(crime_immigration %>% select(Rape_Per_Capita, Illegal_Immigration_Per_capita, Officers_per_1000, Population))
+```
+
+- The correlation between **Rape per Capita and Illegal Immigration per Capita** is quite weak (0.097), indicating that there is no significant direct relationship between the rate of illegal immigration and the rate of rape per capita in the dataset. This suggests that the levels of illegal immigration are not a strong predictor of changes in the rape rate across these states.
+Rape per Capita and Officers per 1,000 People:
+
+- The negative correlation (-0.586) between **Rape per Capita and Officers per 1,000 People** remains moderate. This indicates that states with a higher police presence tend to have lower rates of rape per capita. This relationship suggests that having more law enforcement per capita could potentially help reduce rape rates, which aligns with the common understanding that a stronger law enforcement presence can act as a deterrent to crime.
+
+- The correlation between **Illegal Immigration per Capita and Officers per 1,000 People** is negative but weak (-0.243). This suggests a slight tendency for states with higher rates of illegal immigration per capita to have fewer police officers per 1,000 people, but this relationship is not strong enough to draw any definitive conclusions. It may indicate resource constraints in states with higher immigration rates, or it could simply reflect other unobserved factors.
+Population and Rape per Capita:
+
+- The correlation between **Population and Rape per Capita** is very weak (0.061), indicating that the size of the population does not significantly affect the rape rate on a per capita basis. In other words, larger states do not necessarily have higher rates of rape when adjusted for population.
+Population and Illegal Immigration per Capita:
+
+- The moderate positive correlation (0.499) between **Population and Illegal Immigration per Capita** suggests that states with larger populations tend to have higher levels of illegal immigration per capita. This could be due to the fact that more populous states, such as California and Texas, are more likely to attract higher rates of immigration due to their economic opportunities and border proximity.
+Population and Officers per 1,000 People:
+
+- The correlation between **Population and Officers per 1,000 People** is nearly zero (-0.024), indicating that population size does not meaningfully impact the number of police officers per capita across states. This implies that larger populations do not necessarily correspond to more or fewer police officers per capita, meaning police staffing levels might not be directly related to the overall population size.
+
+### Possible Improvements
+
+Given the relatively weak correlations between Rape per Capita and Illegal Immigration per Capita, it would be useful to:
+
+- Run regression models to better understand potential causal relationships, controlling for other confounding factors such as economic conditions, poverty rates, or changes in law enforcement policies.
+- Explore temporal trends more closely by looking at how crime rates and immigration rates have evolved over time within specific states, as this might reveal more nuanced patterns not visible in the aggregate correlation analysis.
+- Investigate other types of crime beyond rape to see if there are different patterns when considering violent crime, property crime, or overall crime rates in relation to illegal immigration and policing levels.
+
+### Potential Confounding Factors
+
+There are several potential confounding factors that need to be considered when analyzing the relationship between crime rates, illegal immigration, and police presence. 
+
+#### Economic Factors:
+
+- Unemployment rates, poverty levels, and income inequality are well-established contributors to crime rates. States with higher illegal immigration levels might also experience varying economic conditions that can influence crime rates. If these economic factors are not controlled for, the effect of illegal immigration on crime could be misrepresented.
+
+#### Urbanization and Population Density:
+
+States with larger urban centers or higher population densities, like California or New York, tend to have both higher crime rates and more immigration. Urban areas often experience more crime due to various socio-economic factors, and without controlling for the degree of urbanization, it’s hard to attribute changes in crime rates to illegal immigration or police presence.
+
+#### Changes in Law Enforcement Policies:
+
+States may have introduced new law enforcement policies (e.g., stricter immigration laws, changes in policing tactics, or reform of the criminal justice system) that affect both crime rates and how immigration is enforced. If these policies are not accounted for, they could confound the relationship between illegal immigration and crime. For example, more aggressive immigration enforcement could reduce illegal immigration, but at the same time, it might also affect crime rates indirectly.
+
+#### Migration Patterns and Other Immigration Types:
+
+Focusing solely on illegal immigration might obscure broader trends in legal immigration or internal migration (people moving between states), both of which could also influence crime rates. For example, states like California may experience large volumes of legal immigration, which might affect crime trends but is not captured by illegal immigration figures.
+
+#### Demographic Changes:
+
+States that experience large demographic shifts, including the age distribution or education levels of the population, may see changes in crime patterns. Younger populations, for instance, tend to have higher crime rates. Failing to account for such demographic changes could confound the analysis of illegal immigration’s impact on crime.
+
+### Can We Infer Causal Relationships from the Descriptive Analysis?
+**No**, we cannot infer causal relationships from this descriptive analysis alone. Correlation does not imply causation, and the correlations observed between illegal immigration, crime, and police presence could be driven by several of the confounding factors mentioned above. The descriptive statistics and visualizations are useful in identifying potential trends, but they do not account for all the underlying factors that could influence the relationship between the variables.
+
+To properly infer causality, we would need to employ an empirical strategy that controls for these confounding variables. This would allow us to isolate the effect of illegal immigration on crime rates more accurately.
+
+### Next Steps to Address Confounding Factors:
+
+To address these concerns, we can pursue the following strategies:
+
+1. **Multivariate Regression Analysis:**
+
+- A multivariate regression would allow us to control for several variables at once, such as unemployment rates, poverty levels, urbanization, and demographic shifts. By including these additional factors, we can better isolate the effect of illegal immigration on crime rates. 
+
+- A Difference-in-Differences approach could be used if there are certain states that implemented new immigration or law enforcement policies at different times. This method would allow us to compare changes in crime rates between states with and without such policy changes, providing a clearer picture of the causal impact of immigration and police presence on crime.
+
+2. **Instrumental Variable (IV) Approach:**
+
+- An instrumental variable approach could be used to tackle potential endogeneity issues. For example, we could find an external instrument that affects immigration levels but not crime rates directly (like economic shocks in nearby countries leading to immigration increases). This would allow us to estimate the causal effect of illegal immigration on crime more accurately.
+
+- To generalize findings beyond rape crimes, it may be beneficial to include other types of crime, such as property crimes, violent crimes, and drug-related offenses. This would give a more comprehensive view of the relationship between illegal immigration and overall crime trends.
+
+
